@@ -1,0 +1,288 @@
+In a terminal window, navigate to the exercise directory.
+
+[student@workstation ~]$ cd ~/DO288/labs/images-ubi/greetings
+Inspect the contents of the Containerfile, included in this directory. This file defines the instructions to build the container image for the Node.js application.
+
+FROM registry.ocp4.example.com:8443/ubi9/nodejs-18-minimal:1-51 
+
+ENV PORT=80
+EXPOSE ${PORT} 
+
+USER root
+
+ADD . $HOME
+
+RUN npm ci --omit=dev && rm -rf .npm
+
+CMD npm start
+
+1 As the base image, use the minimal version of the Node.js 18 UBI 9.0 image.
+
+2 Make the application listen on port 80. The Containerfile sets the PORT variable because the application reads this variable to determine the port.
+
+3 Run as the root user to use port 80, which is a privileged port.
+
+4 Copy the application source files from the ~/DO288/labs/images-ubi/greetings workstation directory into the HOME directory of the container. The Node.js UBI images set the HOME variable to /opt/app-root/src.
+
+5 Install dependencies for production. The npm ci command (clean install) is similar to the npm install command. It removes the current dependencies and downloads the specified versions of the application dependencies. The rm command removes the cache files that NPM creates during the installation process.
+
+6 Run the server. The package.json file declares the start script.
+
+Build and push the container image.
+
+Log in to the container registry.
+
+[student@workstation greetings]$ podman login -u developer -p developer registry.ocp4.example.com:8443
+Login Succeeded!
+Build the container image with Podman.
+
+[student@workstation greetings]$ podman build . -t registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.0
+...output omitted...
+Successfully tagged registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.0
+680...01ae
+Push the container image to the internal classroom registry.
+
+[student@workstation greetings]$ podman push registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.0
+...output omitted...
+Writing manifest to image destination
+Storing signatures
+Deploy the image to the cluster and verify that the container fails.
+
+Log in to the cluster as the developer user.
+
+[student@workstation greetings]$ oc login -u developer -p developer https://api.ocp4.example.com:6443
+Login successful.
+
+...output omitted...
+
+Using project "images-ubi".
+Ensure that you use the images-ubi project.
+
+[student@workstation ~]$ oc project images-ubi
+Already on project "images-ubi" on server "https://api.ocp4.example.com:6443".
+Create an application in the cluster by using the image that you just built. Call the application greetings.
+
+[student@workstation greetings]$ oc new-app --name greetings --image=registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.0
+
+--> Found container image ...
+
+    Node.js 18 Micro
+    ----------------
+...output omitted...
+
+--> Success
+    Application is not exposed. You can expose services to the outside world by executing one or more of the commands below:
+     'oc expose service/greetings'
+    Run 'oc status' to view your app.
+Verify that the application pod is crashing.
+
+[student@workstation greetings]$ oc get pods
+NAME                    READY   STATUS              RESTARTS   AGE
+greetings-...           0/1     CrashLoopBackOff   0          2s
+View the deployment logs and find out why the application fails to start.
+
+[student@workstation greetings]$ oc logs deployments/greetings
+
+> greetings@1.0.0 start
+> node index.js
+
+Running with user ID: 1000690000, group ID: 0                                                       ---------->1
+Verifying file cache...
+File cache does not work due to [Error: EACCES: permission denied, open '/var/cache/...'] {         ----------->2
+  errno: -13,
+  code: 'EACCES',
+  syscall: 'open',
+  path: '/var/cache/translation_greeting_en-us'
+}
+
+...output omitted...
+
+Error: listen EACCES: permission denied 0.0.0.0:80                                                    -----------> 3
+    at Server.setupListenHandle
+    ...output omitted...
+1 The cluster runs the container with a non-root user and the root group.
+
+2 The application does not have write access to /var/cache.
+
+3 The application cannot use the privileged port 80.
+
+Remove the application and its associated resources:
+
+[student@workstation greetings]$ oc delete all --selector app=greetings
+
+Reproduce the problem locally by running the application as a non-root user.
+
+Run the container image with Podman. Verify that the application is running on port 80, by using the 0 user ID, which corresponds to the root user, and the 0 group ID, which corresponds to the root group.
+
+[student@workstation greetings]$ podman run --rm registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.0
+
+> greetings@1.0.0 start
+> node index.js
+
+Running with user ID: 0, group ID: 0
+Verifying file cache...
+Starting server...
+Server listening at http://0.0.0.0:80/
+The container runs successfully because Podman is honoring the USER root instruction. Red Hat OpenShift, in contrast, does not honor the USER instruction and runs containers by using an arbitrary non-root user.
+
+Stop the container by pressing Ctrl+C.
+
+Open the Containerfile, and remove the USER root instruction. The file must look as follows:
+
+FROM registry.ocp4.example.com:8443/ubi9/nodejs-18-minimal:1-51
+
+ENV PORT=80
+EXPOSE ${PORT}
+
+ADD . $HOME
+
+RUN npm ci --omit=dev && rm -rf .npm
+
+CMD npm start
+Rebuild the application image and tag it as version 1.0.1.
+
+[student@workstation greetings]$ podman build . -t registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+
+Important
+Make sure that you use the new image tag, 1.0.1, in the rest of the exercise.
+
+Run the new container image. Verify that the application runs by using the 1001 user ID. By running as a non-root user locally, this container exhibits the same problems as a container that runs on the cluster.
+
+[student@workstation greetings]$ podman run --rm registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+...output omitted...
+
+Running with user ID: 1001, group ID: 0
+Verifying file cache...
+File cache does not work due to [Error: EACCES: permission denied, open '/var/cache/...] {
+
+...output omitted...
+
+Error: listen EACCES: permission denied 0.0.0.0:80
+
+...output omitted...
+
+
+Fix the port error and rebuild the container image.
+
+Change the port in the Containerfile to 8080. This port is non-privileged.
+
+ENV PORT=8080
+EXPOSE ${PORT}
+Rebuild the application image as version 1.0.1.
+
+[student@workstation greetings]$ podman build . \
+-t registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+...output omitted...
+Successfully tagged registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+680...01ae
+Rerun the container image. The port problem is solved and the application now listens on port 8080. The /var/cache/ permission error still persists.
+
+[student@workstation greetings]$ podman run --rm \
+registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+...output omitted...
+
+Running with user ID: 1001, group ID: 0
+Verifying file cache...
+File cache does not work due to [Error: EACCES: permission denied, open '/var/cache/...'] {
+  errno: -13,
+  code: 'EACCES',
+  syscall: 'open',
+  path: '/var/cache/translation_greeting_en-us'
+}
+Starting server...
+Server listening at http://0.0.0.0:8080/
+Stop the container by pressing Ctrl+C.
+
+Fix the file permission error, build, and push the container image.
+
+Fix the permissions of the /var/cache directory.
+
+Return to the Containerfile. As the root user, ensure that the group assigned to the /var/cache directory is the root group (0). Then, grant the root group the same permissions as the user that owns this directory. Finally, restore 1001 as the user ID that runs the application.
+
+FROM registry.ocp4.example.com:8443/ubi9/nodejs-18-minimal:1-51
+
+ENV PORT=8080
+EXPOSE ${PORT}
+
+ADD . $HOME
+
+RUN npm ci --omit=dev && rm -rf .npm
+
+USER root
+RUN chgrp -R 0 /var/cache && \
+    chmod -R g=u /var/cache
+USER 1001
+
+CMD npm start
+Rebuild the application image as version 1.0.1.
+
+[student@workstation greetings]$ podman build . \
+-t registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+...output omitted...
+Successfully tagged registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+680...01ae
+Rerun the container image. The application runs as user 1001 on port 8080.
+
+[student@workstation greetings]$ podman run --rm \
+registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+
+> greetings@1.0.0 start
+> node index.js
+
+Running with user ID: 1001, group ID: 0
+Verifying file cache...
+Starting server...
+Server listening at http://0.0.0.0:8080/
+Press Ctrl+C to stop the application.
+
+Push the 1.0.1 tag to the registry.
+
+[student@workstation greetings]$ podman push \
+registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+...output omitted...
+Writing manifest to image destination
+Storing signatures
+Deploy the updated image:
+
+Recreate the application by using the 1.0.1 version of the image.
+
+[student@workstation greetings]$ oc new-app \
+--name greetings \
+--image=registry.ocp4.example.com:8443/developer/images-ubi-greetings:1.0.1
+...output omitted...
+--> Success
+    Application is not exposed. You can expose services to the outside world by executing one or more of the commands below:
+     'oc expose service/images-ubi-greetings'
+    Run 'oc status' to view your app.
+Verify that the application pod starts correctly. Wait until the pod is in the Running state.
+
+[student@workstation greetings]$ oc get pods
+NAME                    READY   STATUS    RESTARTS   AGE
+greetings-...   1/1     Running   0          45s
+Find the application pod and inspect the logs. Verify that the logs do not show any problems.
+
+[student@workstation greetings]$ oc logs deployments/greetings
+
+> greetings@1.0.0 start
+> node index.js
+
+Running with user ID: 1000690000, group ID: 0
+Verifying file cache...
+Starting server...
+Server listening at http://0.0.0.0:8080/
+Expose the application.
+
+[student@workstation greetings]$ oc expose svc/greetings
+route.route.openshift.io/greetings exposed
+Get the route URL.
+
+[student@workstation greetings]$ oc get route greetings
+NAME        HOST/PORT                                     ...
+greetings   greetings-images-ubi.apps.ocp4.example.com    ...
+Make a request to verify that the application responds successfully.
+
+[student@workstation greetings]$ curl -s \
+http://greetings-images-ubi.apps.ocp4.example.com | jq
+{
+  "message": "Guten tag"
+}
